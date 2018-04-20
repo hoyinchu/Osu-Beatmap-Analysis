@@ -1,0 +1,47 @@
+---
+title: "CHU_H Final Poject Step One Data Acquisition"
+output: html_notebook
+---
+
+This is the library we need for this phase of the project.
+
+```{r}
+library(jsonlite)
+```
+
+To obtain our data, we will need to perform a call to the official osu api.
+
+```{r}
+# This is the base url for the api, all api calls will have this in the beginning
+base.api.url <- "https://osu.ppy.sh/api/"
+
+# This is the parameter that gets beatmap data from the api
+get.beatmap.request <- "get_beatmaps?"
+
+# This is my personal api key, please use your own
+personal.api.key <- "k=725913db82908989f75b458d76f36ded87176eec"
+
+# The parameter that tells the api to return all beatmaps made from since April 1st, 2018
+since.parameter <- "&since=2018-04-01"
+
+# Since we are only focusing on osu!standard mode the parameter would be 0
+mode.parameter <- "&m=0"
+
+# The final url we are using to call the api
+final.request.url <- paste(base.api.url,get.beatmap.request,personal.api.key,since.parameter,mode.parameter, sep="")
+```
+
+Now we will make a function that would make the call and returns the data obtained in a dataframe
+
+```{r}
+# Returns a dataframe with the info from the 500 latest beatmaps
+beatmap.data.since.april <- fromJSON(txt = final.request.url)
+print(beatmap.data.since.april)
+```
+
+It is important to note that this data is collected on 4.15.18 8:00PM because beatmaps are constantly being uploaded and these data will only be true up until this point in time. To preserve our data we can store them into a CSV file.
+
+```{r}
+write.table(beatmap.data.since.april, "mostRecent500BeatmapStatisticApril.csv",row.names = FALSE, sep = ",")
+```
+

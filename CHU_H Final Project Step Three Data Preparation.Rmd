@@ -1,0 +1,166 @@
+---
+title: "CHU_H Final Project Step Three Data Preparation"
+output: html_notebook
+---
+
+These are the libraries we are going to use in this step.
+
+```{r}
+library(RSQLite)
+library(dplyr)
+library(caret)
+```
+
+We will load the CSV we obtained from the previous step into three separate tables. To do so we can load it as a dataframe then use the build-in functions in the package RSQLite
+
+```{r}
+# Loading the CSV file as a dataframe
+april.beatmaps.csv <- read.csv(file = "mostRecent500BeatmapStatisticApril.csv", header = TRUE)
+april.beatmaps.dataframe <- as.data.frame(april.beatmaps.csv)
+```
+
+
+```{r}
+# The dataframe to be loaded in the BeatmapInfo table
+beatmapInfo.df <- select(april.beatmaps.dataframe,c("beatmap_id","total_length","hit_length","version","file_md5","diff_size","diff_overall","diff_approach","diff_drain","mode","playcount","passcount","max_combo","difficultyrating"))
+print(beatmapInfo.df)
+
+# The dataframe to be loaded in the BeatmapSetInfo table
+beatmapSetInfo.df <- select(april.beatmaps.dataframe,c("beatmapset_id","approved","approved_date","last_update","artist","title","creator","bpm","source","tags","genre_id","language_id","favourite_count"))
+# Since there are duplicate rows, we would want to remove them
+beatmapSetInfo.df <- unique(beatmapSetInfo.df)
+
+print(beatmapSetInfo.df)
+
+# The dataframe to be loaded in the BeatmapSetContain table
+beatmapSetContain.df <- select(april.beatmaps.dataframe,c("beatmapset_id","beatmap_id"))
+print(beatmapSetContain.df)
+
+```
+
+
+```{r}
+# Establishing a connection to the database
+db <- dbConnect(SQLite(),dbname="AprilBeatmaps.db")
+
+# Writing the BeatmapInfo table
+dbWriteTable(conn = db,name="BeatmapInfo",value = beatmapInfo.df, row.names = FALSE, overwrite = TRUE)
+
+# Writing the BeatmapSetInfo table
+dbWriteTable(conn = db, name="BeatmapSetInfo", value = beatmapSetInfo.df ,row.names = FALSE, overwrite = TRUE)
+
+# Writing the BeatmapSetContain table
+dbWriteTable(conn = db, name="BeatmapSetContain", value = beatmapSetContain.df , row.names = FALSE, overwrite = TRUE)
+```
+
+To verify we have the correctly stored the data:
+
+```{r}
+dbReadTable(db,"BeatmapInfo")
+dbReadTable(db,"BeatmapSetInfo")
+dbReadTable(db,"BeatmapSetContain")
+```
+
+Since we only want non-text data, we should be getting these columns from the database
+
+```{r}
+# The query used to retrieve data for the initial table, we also ordered by playcount to make life easier
+initial.table.query <- 
+"select 
+bset.beatmapset_id, bmap.beatmap_id, bmap.hit_length, 
+bmap.diff_size, bmap.diff_overall, bmap.diff_approach, bmap.diff_drain, 
+bmap.playcount, bmap.max_combo, bmap.difficultyrating, 
+bset.approved, bset.approved_date, bset.bpm, 
+bset.genre_id,bset.language_id, bset.favourite_count 
+from 
+BeatmapInfo bmap 
+inner join BeatmapSetContain on bmap.beatmap_id=BeatmapSetContain.beatmap_id 
+inner join BeatmapSetInfo bset on BeatmapSetContain.beatmapset_id=bset.beatmapset_id 
+order by bmap.playcount"
+
+initial.beatmap.dataframe <- dbGetQuery(db,initial.table.query)
+dbDisconnect(db)
+print(initial.beatmap.dataframe)
+```
+
+Since approved, genre_id and language_id are catagorical, we are going to add dummy columns for each catagories except for those that does not exist in our data. There is a package in Caret that can help us do that, but we need to transform id into actual categories first
+
+```{r}
+approved.dummy.names <- c("pending","ranked","approved","qualified","loved")
+
+genre.dummy.names <- c("genre_any","genre_unspecified","genre_video_game","genre_anime","genre_rock","genre_pop","genre_other","genre_novelty","genre_invalid","genre_hiphop","genre_electronic")
+
+language.dummy.names <- c("language_any","language_other","language_english","language_japanese","language_chinese","language_instrumental","language_korean","language_french","language_german","language_swedish","language_spanish","language_italian")
+
+approved.col <- initial.beatmap.dataframe$approved
+genre.col <- initial.beatmap.dataframe$genre_id
+lan.col <- initial.beatmap.dataframe$language_id
+
+approved.name.vector <- vector(mode="character",length=500)
+for (i in 1:nrow(initial.beatmap.dataframe)) {
+  approved.name.vector[i] <- approved.dummy.names[approved.col[i] + 1]
+}
+
+genre.name.vector <- vector(mode="character",length=500)
+for (i in 1:nrow(initial.beatmap.dataframe)) {
+  genre.name.vector[i] <- genre.dummy.names[genre.col[i] + 1]
+}
+
+language.name.vector <- vector(mode="character",length=500)
+for (i in 1:nrow(initial.beatmap.dataframe)) {
+  language.name.vector[i] <- language.dummy.names[lan.col[i] + 1] 
+}
+
+# This part of the code is inspired by
+# https://amunategui.github.io/dummyVar-Walkthrough/
+dummy.dataframe <- data.frame(approved.name.vector, genre.name.vector,language.name.vector)
+dmy <- dummyVars(" ~ .", data=dummy.dataframe)
+to.be.appended.dummy.dataframe <- data.frame(predict(dmy,newdata = dummy.dataframe))
+print(to.be.appended.dummy.dataframe)
+```
+
+Now that we have the new dummy dataframe, we can rename it then append it to the dataframe we were working on and drop the original id columns
+
+```{r}
+names(to.be.appended.dummy.dataframe) <- c("approved_loved", "approved_qualified","approved_ranked","genre_anime","genre_electronic","genre_hiphop","genre_novelty","genre_pop","genre_rock","genre_unspecified","genre_video_game","language_chinese","language_english","language_german","language_instrumental","language_japanese","language_korean","language_other")
+
+drops <- c("approved","genre_id","language_id")
+added.dummy.dataframe <- initial.beatmap.dataframe[, !(names(initial.beatmap.dataframe) %in% drops)]
+added.dummy.dataframe <- data.frame(added.dummy.dataframe,to.be.appended.dummy.dataframe)
+print(added.dummy.dataframe)
+
+```
+
+To make sure popularity is evaluated fairly, we are going to make a derived column named "playcount_per_day" which is calculated by the beatmap's playcount divided by the days since it has been approved. After calculating the column we can drop playcount
+```{r}
+# Calculate the number of days passed since the beatmap is approved
+data.collected.date <- as.Date("4/15/2018",format='%m/%d/%Y')
+date.diff <- data.collected.date - as.Date(added.dummy.dataframe$approved_date)
+date.diff.as.numeric <- as.numeric(date.diff)
+
+# Deriving the playcount_per_day column by dividing playcount by day difference
+playcount_per_day <- added.dummy.dataframe$playcount / date.diff.as.numeric
+
+# Now append this column to our dataframe and drop approve date
+drops <- c("approved","approved_date","playcount")
+well.shaped.dataframe <- added.dummy.dataframe[, !(names(added.dummy.dataframe) %in% drops)]
+well.shaped.dataframe <- data.frame(well.shaped.dataframe, playcount_per_day)
+well.shaped.dataframe
+```
+
+Looking at the dataset again, we discovered that many of our feature columns are very sparsed, so we decided to only preserve the ones that make up at least 10% of our data (at least 50). We are also going to drop an extra column in every catogory.
+
+```{r}
+columns.to.drop <- c("approved_qualified","approved_loved","genre_unspecified","genre_rock","genre_novelty","genre_hiphop","genre_electronic","language_english","language_german","language_korean","language_other","genre_video_game","language_chinese","language_instrumental")
+well.shaped.dataframe.less.features <- well.shaped.dataframe[, !(names(well.shaped.dataframe) %in% columns.to.drop)]
+well.shaped.dataframe.less.features
+```
+
+
+```{r}
+# This will be the dataset we are using for modeling
+write.table(well.shaped.dataframe.less.features,"AprilBeatmapDataWellShaped.csv", row.names = FALSE, sep=",")
+```
+
+
+

@@ -1,0 +1,110 @@
+---
+title: "CHU_H Final Project Step Two Data Exploration"
+output: html_notebook
+---
+
+These are the libraries we are going to use for this step
+
+```{r}
+library(GGally)
+```
+
+Before we do any data shaping, we may want to explore our data to get a good sense of what is going on so when we are constructing our model later we can keep in mind that there may or may not be underlying issues with our data.
+
+```{r}
+# Loading the CSV file as a dataframe
+april.beatmaps.csv <- read.csv(file = "mostRecent500BeatmapStatisticApril.csv", header = TRUE)
+april.beatmaps.dataframe <- as.data.frame(april.beatmaps.csv)
+```
+
+To make sure popularity is evaluated fairly, we are going to make a derived column named "playcount_per_day" which is calculated by the beatmap's playcount divided by the days since it has been approved
+
+```{r}
+data.collected.date <- as.Date("4/15/2018",format='%m/%d/%Y')
+date.diff <- data.collected.date - as.Date(april.beatmaps.dataframe$approved_date)
+date.diff.as.numeric <- as.numeric(date.diff)
+playcount_per_day <- april.beatmaps.dataframe$playcount / date.diff.as.numeric
+april.beatmaps.dataframe <- data.frame(april.beatmaps.dataframe,playcount_per_day)
+april.beatmaps.dataframe
+```
+
+Some basic statistics:
+
+```{r}
+summary(april.beatmaps.dataframe)
+```
+
+
+Some basic data plotting to check the spread of playcount per day
+
+```{r}
+plot(april.beatmaps.dataframe$playcount_per_day,
+     ylab = "Play Count per Day")
+```
+
+From the plot we can see aside from a couple data points, most play_count per day do not exceed 10000. So we should perform outlier detection and take note of what data are outliers
+
+```{r}
+# We classify data that are three standard deviations away from mean to be outliers
+april.beatmap.play.count.per.day.std.dev <- sd(april.beatmaps.dataframe$playcount_per_day)
+april.beatmap.play.count.per.day.mean <- mean(april.beatmaps.dataframe$playcount_per_day)
+outlier.higher.limit <- april.beatmap.play.count.per.day.mean + 3 * april.beatmap.play.count.per.day.std.dev
+outlier.lower.limit <- april.beatmap.play.count.per.day.mean - 3 * april.beatmap.play.count.per.day.std.dev
+high.outliers <- april.beatmaps.dataframe[april.beatmaps.dataframe$playcount_per_day > outlier.higher.limit,]
+low.outliers <- april.beatmaps.dataframe[april.beatmaps.dataframe$playcount_per_day < outlier.lower.limit,]
+high.outliers
+low.outliers
+```
+
+From the last code block we found there are 7 data points that can be considered as high outliers and no low outliers, we should record them so when we are building model we are aware that these data points are outliers and should probably be removed from training 
+
+```{r}
+write.csv(high.outliers,"outliers.csv")
+```
+
+
+We will make a new dataframe without these data points and plot it again to see if how much of a difference there are
+
+```{r}
+april.beatmaps.dataframe.outliers.removed <- april.beatmaps.dataframe[april.beatmaps.dataframe$playcount_per_day < outlier.higher.limit,]
+plot(april.beatmaps.dataframe.outliers.removed$playcount_per_day,
+     ylab = "Play Count Per Day")
+```
+
+We noticed from the plots that most of data are sitting at the bottom of the graph, which prompt us to check if the data are distributed normally
+
+```{r}
+hist(april.beatmaps.dataframe.outliers.removed$playcount_per_day,
+     main = "Histogram of April Beatmap Play Count Per Day",
+     xlab = "Play Count Per Day")
+```
+
+From the histogram we can see that our data are positively skewed. This is worth noting because it means when we are building model in the future we should consider applying a transformation to the data, or choose a model that makes no assumption of the distribution of the data
+
+
+Furthermore, we also want to see if there are correlations between features to avoid collinearity. To perform a collinearity check we need to first remove the non-numeric features (and mode since it is always 0).
+
+```{r}
+col.to.drop <- c("version","file_md5","approved_date","last_update","artist","title","creator","source","tags","mode")
+april.beatmaps.dataframe.outliers.removed.and.text.feature.removed <- april.beatmaps.dataframe.outliers.removed[, !(names(april.beatmaps.dataframe.outliers.removed) %in% col.to.drop)]
+april.beatmaps.dataframe.outliers.removed.and.text.feature.removed
+```
+
+Now we can perform collinearity detection using the package
+
+```{r}
+ggpairs(april.beatmaps.dataframe.outliers.removed.and.text.feature.removed)
+```
+
+Even though the diagram is a bit small, we can spot that there is a very strong correlation between total_length and hit_length. Using domain knowledge, we also suspect that there is a correlation between playcount and passcount, and a correlation between playcount and favoritecount. To confirm our suspicion:
+
+```{r}
+cor(april.beatmaps.dataframe.outliers.removed.and.text.feature.removed$total_length, april.beatmaps.dataframe.outliers.removed.and.text.feature.removed$hit_length)
+cor(april.beatmaps.dataframe.outliers.removed.and.text.feature.removed$playcount, april.beatmaps.dataframe.outliers.removed.and.text.feature.removed$passcount)
+cor(april.beatmaps.dataframe.outliers.removed.and.text.feature.removed$playcount,
+    april.beatmaps.dataframe.outliers.removed.and.text.feature.removed$favourite_count)
+```
+
+This means in the future we should probably only use one of "total_length" or "hit_length" to build our model to avoid collinearity. We should also take out passcount because it has a pretty strong correlation with playcount and our predicting variable playcount per day is an direct derivation of play count.
+
+
